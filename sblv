@@ -1,15 +1,35 @@
 #!/usr/bin/env bash
-# Latest Version check for slackbuilds
+# Latest version check for slackbuilds
 
-# Global
+#Copyright (c) 2022 Justin Teague
+#
+#Permission is hereby granted, free of charge, to any person obtaining a copy
+#of this software and associated documentation files (the "Software"), to deal
+#in the Software without restriction, including without limitation the rights
+#to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#copies of the Software, and to permit persons to whom the Software is
+#furnished to do so, subject to the following conditions:
+#
+#The above copyright notice and this permission notice shall be included in all
+#copies or substantial portions of the Software.
+#
+#THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#SOFTWARE.
+
 prgnam="sblv"
 prgnam_version="0.4"
 
 # Environment defaults
 conf_file="${conf_file:-$HOME/.config/sblv}"
 repo_dir="${repo_dir:-$PWD}"
-upload_dir="${upload_dir:-/tmp/$prgnam}"
-slkbld_dir="${slkbld_dir:-/tmp/$prgnam}"
+tmp_dir="/tmp"
+upload_dir="${upload_dir:-$tmp_dir/$prgnam}"
+slackbuild_dir="${slackbuild_dir:-$tmp_dir/$prgnam}"
 
 # Optional with defaults
 slackbuild="${slackbuild:-}"
@@ -83,7 +103,7 @@ is_github () {
 
 source_info () {
 
-    if [ -f "$slackbuild".info ]; then
+    if [ -r "$slackbuild".info ]; then
         . "$slackbuild".info
     else
         print_err "Cannot find $slackbuild.info"
@@ -106,12 +126,36 @@ prepare_upload () {
     if [ ! -e "$__upload_file" ]; then
         cd ..
         mkdir -p "$upload_dir"/"$slackbuild"-"$latest_version"
+        sbolint 2>> "$upload_dir"/"$slackbuild"-"$latest_version/error.log" || print_err "sbolint error with $slackbuild."
+
         tar -czvf "$__upload_file" "$slackbuild"
         printf "%s is ready to be submitted from %s.\n" \
             "$slackbuild" "$__upload_file"
     fi
 }
 
+prepare_slackbuild () {
+    __slackbuild_dir="$slackbuild_dir/$slackbuild-$latest_version"
+
+    if [ ! -r "$__slackbuild_dir"/*.tgz ]; then
+        source_info
+        mkdir -p "$__slackbuild_dir"
+        cp -a ../"$slackbuild" "$tmp_dir"/"$slackbuild"-"$latest_version"
+
+        pushd "$tmp_dir"/"$slackbuild"-"$latest_version" >/dev/null
+        if check_exists "$DOWNLOAD_x86_64"; then
+            wget "$DOWNLOAD_x86_64"
+        else
+            wget "$DOWNLOAD"
+        fi
+        chmod +x "$slackbuild.SlackBuild"
+        bash -c "OUTPUT=$__slackbuild_dir ./$slackbuild.SlackBuild"
+        popd >/dev/null
+        rm -r "$tmp_dir"/"$slackbuild"-"$latest_version"
+        
+    fi
+    sbopkglint "$__slackbuild_dir"/*.tgz 2> "$__slackbuild_dir"/error.log 1> "$__slackbuild_dir"/success.log || print_err "sbolint error with $slackbuild."
+}
 update () {
     
     # Update the VERSION in info and slackbuild
@@ -146,8 +190,8 @@ update () {
 	done
     fi
 
-    sbolint || exit 1
     prepare_upload
+    prepare_slackbuild
 }
 
 check_latest_version () {
@@ -159,8 +203,9 @@ check_latest_version () {
         fi
     elif [ "$latest_version" = "$VERSION" ]; then
         printf "%s is at latest version (%s).\n" "$slackbuild" "$VERSION"
-        sbolint || exit 1
+
         prepare_upload
+        prepare_slackbuild
     else
         print_err "Cannot check version of $slackbuild."
         exit 1
@@ -229,7 +274,7 @@ main () {
                 shift 2
                 ;;
             -s|--slackbuild-dir)
-                slkbld_dir="$2"
+                slackbuild_dir="$2"
                 shift 2
                 ;;
             -u|--upload-dir)
