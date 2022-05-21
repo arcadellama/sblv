@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# Latest Version check for slackbuilds
+
+# Global
+prgnam="sblv"
+prgnam_version="0.4"
+
+# Environment defaults
+conf_file="${conf_file:-$HOME/.config/sblv}"
+repo_dir="${repo_dir:-$PWD}"
+upload_dir="${upload_dir:-/tmp/$prgnam}"
+slkbld_dir="${slkbld_dir:-/tmp/$prgnam}"
+
+# Optional with defaults
+slackbuild="${slackbuild:-}"
+git_repo="${git_repo:-}"
+git_name="${git_name:-$slackbuild}"
+latest_version="${latest_version:-}"
+
+set -e
+
+usage () {
+    printf "%s: Version:%s\n\n\
+        Usage: %s -c <config> -r <repo directory> -s <slackbuild dir> -u <upload dir>\n" \
+        "$prgnam" "$prgnam_version" "$prgnam"
+}
+
+
+print_err () {
+    printf "Error: %s\n" "$1"
+}
+
+
+prompt_yn () {
+    read -r -p "$1" confirm
+    case "$confirm" in
+        [Yy]* )
+	    return 0
+	    ;;
+	[Nn]* )
+        return 1
+	    ;;
+	    * )
+	    echo "Invalid response."
+	    exit 1
+	    ;;
+    esac
+}
+
+first_seven () {
+    cut -c -7 <<< "$1"
+}
+
+
+check_exists () {
+    __req_var=("$@")
+
+    for i in "${__req_var[@]}"; do
+        if [ -z "$i" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+is_commit () {
+    grep -q "COMMIT=" "$slackbuild.SlackBuild"
+    return $?
+}
+
+is_github () {
+
+    if check_exists "$DOWNLOAD"; then
+        grep -q "github.com" <<< "$DOWNLOAD"
+        return $?
+    elif check_exists "$DOWNLOAD_x86_64"; then
+        grep -q "github.com" <<< "$DOWNLOAD"
+        return $?
+    else
+        return 1
+    fi
+}
+
+source_info () {
+
+    if [ -f "$slackbuild".info ]; then
+        . "$slackbuild".info
+    else
+        print_err "Cannot find $slackbuild.info"
+        exit 1
+    fi
+}
+
+load_config () {
+    __config="$1"
+    if [ -r "$__config" ]; then
+        . "$__config"
+    else
+        print_err "Cannot load conifg at $config."
+        exit 1
+    fi
+}
+
+prepare_upload () {
+    __upload_file="$upload_dir/$slackbuild-$latest_version/$slackbuild.tar.gz"
+    if [ ! -e "$__upload_file" ]; then
+        cd ..
+        mkdir -p "$upload_dir"/"$slackbuild"-"$latest_version"
+        tar -czvf "$__upload_file" "$slackbuild"
+        printf "%s is ready to be submitted from %s.\n" \
+            "$slackbuild" "$__upload_file"
+    fi
+}
+
+update () {
+    
+    # Update the VERSION in info and slackbuild
+    sed -i "s|$VERSION|$latest_version|g" "$slackbuild".{info,SlackBuild} 
+
+    # Re-source the info file with the updated variables
+    source_info
+
+    if [ "$DOWNLOAD" ]; then
+	__dl_array=("$DOWNLOAD")
+	__oldmd5=("$MD5SUM")
+	for i in "${!__dl_array[@]}"; do
+		__newmd5=$(curl -sL "${__dl_array[$i]}" | md5sum | cut -d ' ' -f 1)
+		if [ $? -ne 0 ]; then
+		    echo "Error downloading ${__dl_array[$i]}"
+		    exit 1
+		fi
+        sed -i "s|${__oldmd5[$i]}|${__newmd5}|g" "$slackbuild".info 
+	done
+    fi
+
+    if [ "$DOWNLOAD_x86_64" ]; then
+	__dl_array64=("$DOWNLOAD_x86_64")
+	__oldmd564=("$MD5SUM_x86_64")
+	for i in "${!__dl_array64[@]}"; do
+		__newmd564=$(curl -sL "${__dl_array64[$i]}" | md5sum | cut -d ' ' -f 1)
+		if [ $? -ne 0 ]; then
+		    echo "Error downloading ${__dl_array64[$i]}"
+		    exit 1
+		fi
+		sed -i "s|${__oldmd564[$i]}|${__newmd564}|g" "$slackbuild".info 
+	done
+    fi
+
+    sbolint || exit 1
+    prepare_upload
+}
+
+check_latest_version () {
+
+    if [ "$latest_version" != "$VERSION" ]; then
+        if prompt_yn \
+            "Update $slackbuild from $VERSION to $latest_version? "; then
+            update
+        fi
+    elif [ "$latest_version" = "$VERSION" ]; then
+        printf "%s is at latest version (%s).\n" "$slackbuild" "$VERSION"
+        sbolint || exit 1
+        prepare_upload
+    else
+        print_err "Cannot check version of $slackbuild."
+        exit 1
+    fi
+}
+
+get_github_latest_version () {
+
+    git_repo="$(grep "github.com" <<< "$DOWNLOAD" | cut -d / -f 4)"
+    git_name="$(grep "github.com" <<< "$DOWNLOAD" | cut -d / -f 5)"
+
+    if is_commit; then
+        # Get latest github COMMIT version
+        __latest_commit_date="$(curl -s \
+            https://api.github.com/repos/"$git_repo"/"$git_name"/commits/main \
+            | grep '"date"' \
+            | tail -n 1 \
+            | tr -d " \"" \
+            | cut -d : -f 2 \
+            | cut -d T -f 1 \
+            | tr -d "-")" # must be a cleaner way???
+
+        __latest_commit="$(git ls-remote https://github.com/"$git_repo"/"$slackbuild" main \
+            | awk '{print $1}')"
+
+        latest_version="$__latest_commit_date"_"$(first_seven "$__latest_commit")"
+
+    else
+
+        # Get latest github RELEASE version
+        latest_version="$(curl -s \
+        https://api.github.com/repos/"$git_repo"/"$git_name"/releases/latest \
+        | grep -Po '"tag_name": "\K.*?(?=")' | sed -e 's/v//1')"
+
+    fi
+    
+    check_latest_version
+
+}
+
+slackbuild_latest_version () {
+    slackbuild="$1"
+
+    source_info
+
+    if is_github; then
+        get_github_latest_version
+    fi
+}
+
+main () {
+
+    if [ -r "$config" ]; then
+        load_config "$config"
+    fi
+
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -c|--conf)
+                config="$2"
+                load_config "$config"
+                shift 2
+                ;;
+            -r|--repo-dir)
+                repo_dir="$2"
+                shift 2
+                ;;
+            -s|--slackbuild-dir)
+                slkbld_dir="$2"
+                shift 2
+                ;;
+            -u|--upload-dir)
+                upload_dir="$2"
+                shift 2
+                ;;
+            *)
+                usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    cd "$repo_dir"
+
+    for repo in academic accessibility audio business desktop development \
+        games gis graphics ham haskell libraries misc multimedia network \
+        office perl python ruby system; do
+
+        if [ -d "$repo" ]; then
+            pushd "$repo" >/dev/null
+
+            for dir in $(find . -maxdepth 1 -mindepth 1 -type d); do
+                pushd "$dir" >/dev/null
+                if [ -r "$dir".SlackBuild ]; then
+                    slackbuild_latest_version "$(basename $dir)"
+                fi
+                popd >/dev/null
+            done
+            popd >/dev/null
+        fi
+    done
+}
+
+main "$@"
