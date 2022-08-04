@@ -124,7 +124,7 @@ prepare_upload () {
     if [ ! -e "$__upload_file" ]; then
         cd ..
         mkdir -p "$upload_dir"/"$slackbuild"-"$latest_version"
-        sbolint 2>> "$upload_dir"/"$slackbuild"-"$latest_version/error.log" || print_err "sbolint error with $slackbuild."
+        sbolint || print_err "sbolint error with $slackbuild."
 
         tar -czvf "$__upload_file" "$slackbuild"
         printf "%s is ready to be submitted from %s.\n" \
@@ -152,7 +152,7 @@ prepare_slackbuild () {
         rm -r "$tmp_dir"/"$slackbuild"-"$latest_version"
         
     fi
-    sbopkglint "$__slackbuild_dir"/*.tgz 2> "$__slackbuild_dir"/error.log 1> "$__slackbuild_dir"/success.log || print_err "sbolint error with $slackbuild."
+    sbopkglint "$__slackbuild_dir"/*.tgz || print_err "sbolint error with $slackbuild."
 }
 update () {
     
